@@ -1,75 +1,48 @@
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion
-} = require("@whiskeysockets/baileys");
+/**
+ * Main launcher file
+ * - Loads env
+ * - Starts bot
+ * - Auto restarts every 2 hours
+ * - Safe for Railway / Render / VPS / Phone
+ */
 
-const { MongoClient } = require("mongodb");
-const P = require("pino");
+console.log("🚀 Starting WhatsApp Bot...");
 
-async function useMongoAuthState(session) {
-  const client = new MongoClient(process.env.MONGO_URI);
-  await client.connect();
-  const db = client.db("wa_sessions");
-  const col = db.collection(session);
+require("dotenv").config();
 
-  const readData = async () => {
-    const data = await col.findOne({ _id: "auth" });
-    return data?.value || {};
-  };
+// Start main bot logic
+require("./main.js");
 
-  const writeData = async (value) => {
-    await col.updateOne(
-      { _id: "auth" },
-      { $set: { value } },
-      { upsert: true }
-    );
-  };
+// ===============================
+// ⏱ Auto Restart (Every 2 Hours)
+// ===============================
+const TWO_HOURS = 2 * 60 * 60 * 1000;
 
-  const state = await readData();
+setTimeout(() => {
+  console.log("♻️ Auto restart triggered (2 hours passed)");
+  process.exit(0); // Platform will auto-restart
+}, TWO_HOURS);
 
-  return {
-    state,
-    saveCreds: async () => writeData(state)
-  };
-}
+// ===============================
+// 🛡 Safety Handlers
+// ===============================
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection:", reason);
+});
 
-async function startBot() {
-  const { version } = await fetchLatestBaileysVersion();
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+});
 
-  let auth;
-  if (process.env.AUTH_TYPE === "mongo") {
-    auth = await useMongoAuthState(process.env.SESSION_NAME);
-  } else {
-    auth = await useMultiFileAuthState("./auth");
-  }
+// ===============================
+// 🔌 Graceful shutdown (optional)
+// ===============================
+process.on("SIGINT", () => {
+  console.log("🛑 SIGINT received, shutting down...");
+  process.exit(0);
+});
 
-  const sock = makeWASocket({
-    version,
-    auth: auth.state,
-    logger: P({ level: "silent" }),
-    printQRInTerminal: !process.env.USE_PAIRING
-  });
-
-  if (process.env.USE_PAIRING === "true" && !sock.authState.creds.registered) {
-    const code = await sock.requestPairingCode(process.env.PAIRING_NUMBER);
-    console.log("📲 Pairing Code:", code);
-  }
-
-  sock.ev.on("creds.update", auth.saveCreds);
-
-  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
-    if (connection === "open") {
-      console.log("✅ WhatsApp connected");
-    }
-    if (connection === "close") {
-      const reason = lastDisconnect?.error?.output?.statusCode;
-      if (reason !== DisconnectReason.loggedOut) {
-        startBot();
-      }
-    }
-  });
-}
-
-startBot();
+process.on("SIGTERM", () => {
+  console.log("🛑 SIGTERM received, shutting down...");
+  process.exit(0);
+});
