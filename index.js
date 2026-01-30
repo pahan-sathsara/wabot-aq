@@ -1,60 +1,75 @@
-console.log('Starting...')
-let { spawn } = require('child_process')
-let path = require('path')
-let fs = require('fs')
-let package = require('./package.json')
-const CFonts  = require('cfonts')
-CFonts.say('Lightweight\nWhatsApp Bot', {
-  font: 'chrome',
-  align: 'center',
-  gradient: ['red', 'magenta']
-})
-CFonts.say(`'${package.name}' By @${package.author.name || package.author}`, {
-  font: 'console',
-  align: 'center',
-  gradient: ['red', 'magenta']
-})
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
 
-var isRunning = false
-/**
- * Start a js file
- * @param {String} file `path/to/file`
- */
-function start(file) {
-  if (isRunning) return
-  isRunning = true
-  let args = [path.join(__dirname, file), ...process.argv.slice(2)]
-  CFonts.say([process.argv[0], ...args].join(' '), {
-    font: 'console',
-    align: 'center',
-    gradient: ['red', 'magenta']
-  })
-  let p = spawn(process.argv[0], args, {
-    stdio: ['inherit', 'inherit', 'inherit', 'ipc']
-  })
-  p.on('message', data => {
-    console.log('[RECEIVED]', data)
-    switch (data) {
-      case 'reset':
-        p.kill()
-        isRunning = false
-        start.apply(this, arguments)
-        break
-      case 'uptime':
-        p.send(process.uptime())
-        break
-    }
-  })
-  p.on('exit', code => {
-    isRunning = false
-    console.error('Exited with code:', code)
-    if (code === 0) return
-    fs.watchFile(args[0], () => {
-      fs.unwatchFile(args[0])
-      start(file)
-    })
-  })
-  // console.log(p)
+const { MongoClient } = require("mongodb");
+const P = require("pino");
+
+async function useMongoAuthState(session) {
+  const client = new MongoClient(process.env.MONGO_URI);
+  await client.connect();
+  const db = client.db("wa_sessions");
+  const col = db.collection(session);
+
+  const readData = async () => {
+    const data = await col.findOne({ _id: "auth" });
+    return data?.value || {};
+  };
+
+  const writeData = async (value) => {
+    await col.updateOne(
+      { _id: "auth" },
+      { $set: { value } },
+      { upsert: true }
+    );
+  };
+
+  const state = await readData();
+
+  return {
+    state,
+    saveCreds: async () => writeData(state)
+  };
 }
 
-start('main.js')
+async function startBot() {
+  const { version } = await fetchLatestBaileysVersion();
+
+  let auth;
+  if (process.env.AUTH_TYPE === "mongo") {
+    auth = await useMongoAuthState(process.env.SESSION_NAME);
+  } else {
+    auth = await useMultiFileAuthState("./auth");
+  }
+
+  const sock = makeWASocket({
+    version,
+    auth: auth.state,
+    logger: P({ level: "silent" }),
+    printQRInTerminal: !process.env.USE_PAIRING
+  });
+
+  if (process.env.USE_PAIRING === "true" && !sock.authState.creds.registered) {
+    const code = await sock.requestPairingCode(process.env.PAIRING_NUMBER);
+    console.log("📲 Pairing Code:", code);
+  }
+
+  sock.ev.on("creds.update", auth.saveCreds);
+
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+    if (connection === "open") {
+      console.log("✅ WhatsApp connected");
+    }
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      if (reason !== DisconnectReason.loggedOut) {
+        startBot();
+      }
+    }
+  });
+}
+
+startBot();
