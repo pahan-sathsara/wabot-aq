@@ -1,19 +1,14 @@
-FROM node:lts-buster
+FROM node:18-bullseye
 
 RUN apt-get update && \
-  apt-get install -y \
-  ffmpeg \
-  imagemagick \
-  webp && \
-  apt-get upgrade -y && \
-  rm -rf /var/lib/apt/lists/*
+    apt-get install -y ffmpeg imagemagick webp && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY package.json .
+WORKDIR /app
 
+COPY package*.json ./
 RUN npm install
 
 COPY . .
-
-EXPOSE 5000
 
 CMD ["node", "index.js"]
